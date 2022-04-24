@@ -7,7 +7,7 @@ import (
 	"github.com/atom-yi/cli/pkg/yutil"
 )
 
-func PrintEvn(envPropName string) {
+func printEnv(envPropName string) {
 	if yutil.IsBlankStr(envPropName) {
 		fmt.Println("empty env prop name")
 		return
@@ -19,5 +19,5 @@ func PrintEvn(envPropName string) {
 		return
 	}
 
-	fmt.Println(os.Getenv(envPropValue))
+	fmt.Println(envPropValue)
 }
