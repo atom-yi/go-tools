@@ -1,6 +1,7 @@
 package pkg
 
 import (
+	"github.com/atom-yi/cli/pkg/bom"
 	"github.com/atom-yi/cli/pkg/curl"
 	"github.com/atom-yi/cli/pkg/env"
 	"github.com/spf13/cobra"
@@ -10,6 +11,7 @@ func Start() {
 	app := app()
 	app.AddCommand(env.Env())
 	app.AddCommand(curl.Curl())
+	app.AddCommand(bom.Bom())
 	app.Execute()
 }
 
