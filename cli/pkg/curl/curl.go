@@ -7,13 +7,10 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
 )
-
-var headerMatcher *regexp.Regexp
 
 // 请求类型
 type ReqType string
@@ -37,120 +34,168 @@ type Request struct {
 	body    string
 }
 
-func init() {
-	// todo: 修改正则表达式
-	headerMatcher, _ = regexp.Compile("(?<=').*(?=')")
-}
-
 func Curl() *cobra.Command {
 	curl := &cobra.Command{
 		Use:              "curl",
 		Short:            "类似 curl 工具",
 		TraverseChildren: true,
 	}
-	curl.AddCommand(getUrl())
-	// todo: curl.AddCommand(postUrl())
+	curl.AddCommand(curlGet())
+	curl.AddCommand(curlPost())
 	return curl
 }
 
-func getUrl() *cobra.Command {
+func curlPost() *cobra.Command {
 	var curlFilePath string
 	var url string
-	var reqBody string
-	getCmd := &cobra.Command{
-		Use:     "get",
-		Short:   "发送 get 请求",
-		Example: "ytool curl get -u http://www.baidu.com",
+	var json string
+	postCmd := &cobra.Command{
+		Use:   "post",
+		Short: "发送 post 请求",
 		Run: func(cmd *cobra.Command, args []string) {
-			resp, err := request(curlFilePath, url, reqBody)
+			request, err := loadCurlFile(curlFilePath)
 			if err != nil {
 				fmt.Println(err)
 				return
 			}
-			fmt.Println("url: \n", url)
-			fmt.Println("resp: \n", len(resp))
+			if url != "" {
+				request.url = url
+			}
+			if json != "" {
+				request.body = json
+			}
+
+			resp, err := doPost(&request)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			fmt.Println(resp)
+		},
+	}
+	postCmd.Flags().StringVarP(&url, "url", "u", "", "url")
+	postCmd.Flags().StringVarP(&json, "json", "j", "", "json")
+	postCmd.Flags().StringVarP(&curlFilePath, "load", "l", "", "加载 curl 文件")
+	return postCmd
+}
+
+func curlGet() *cobra.Command {
+	var curlFilePath string
+	var url string
+	getCmd := &cobra.Command{
+		Use:   "get",
+		Short: "发送 get 请求",
+		Run: func(cmd *cobra.Command, args []string) {
+			// 加载 curl 文件，构造请求
+			request, err := loadCurlFile(curlFilePath)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			// 装配 url
+			if url != "" {
+				request.url = url
+			}
+			resp, err := doGet(request)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			fmt.Println("url: \n", request.url)
+			fmt.Println("headers: \n", request.headers)
+			fmt.Println("resp: \n", resp)
 		},
 	}
 	getCmd.Flags().StringVarP(&url, "url", "u", "", "url")
-	getCmd.Flags().StringVarP(&url, "body", "b", "", "请求内容")
 	getCmd.Flags().StringVarP(&curlFilePath, "load", "l", "", "加载 curl 文件")
 	return getCmd
 }
 
-func request(curlFilePath string, url string, reqBody string) (string, error) {
-	// 加载 curl 文件
-	request, err := loadCurlFile(curlFilePath)
-	if err != nil {
+func doGet(req Request) (string, error) {
+	req.reqType = Get
+	return request(req)
+}
+
+func doPost(req *Request) (string, error) {
+	req.reqType = Post
+	return request(*req)
+}
+
+func request(req Request) (string, error) {
+	// todo: 检查请求是否合法
+	if err := checkReq(req); err != nil {
 		return "", err
 	}
 
-	// 设置 url
-	if url != "" {
-		request.url = url
-	}
-
-	// 设置请求内容
-	if reqBody != "" {
-		request.body = reqBody
-	}
-
-	// todo: 检查请求是否合法
-
 	// 调用请求
-	resp, err := invokeReq(request)
+	resp, err := invokeReq(req)
 	if err != nil {
 		return "", err
 	}
 	return resp, nil
 }
 
-func loadCurlFile(curlFilePath string) (*Request, error) {
+func checkReq(req Request) error {
+	if req.reqType == Unknown {
+		return fmt.Errorf("未知请求类型")
+	}
+	if req.url == "" {
+		return fmt.Errorf("url 不能为空")
+	}
+	return nil
+}
+
+func loadCurlFile(curlFilePath string) (Request, error) {
 	request := Request{
 		reqType: Unknown,
 		url:     "",
 		headers: nil,
 	}
 	if curlFilePath == "" {
-		return &request, nil
+		return request, nil
 	}
-	headers := []string{}
+
+	// 解析 curl 文件
+	headers := []Header{}
 	err := traverseLineInFile(curlFilePath, func(line string) {
 		line = strings.Trim(line, " ")
-		parseReqType(line, &request)
-		if parseHeader(line, &request) != nil {
-			headers = append(headers, line)
+		if strings.HasPrefix(line, "curl") {
+			// 解析连接地址，原始链接信息如下格式：
+			// curl 'http://xxxx' \
+			url := strings.TrimSuffix(line[6:], "' \\")
+			request.url = url
+		} else if header, match := parseHeader(line, &request); match {
+			// 解析 header
+			headers = append(headers, header)
+		} else if strings.HasPrefix(line, "--data-raw") {
+			// 解析请求内容
+			request.body = strings.Trim(line[12:], "' \\")
 		}
-		fmt.Println(line)
 	})
 	if err != nil {
-		return nil, err
+		return request, err
 	}
-	return &request, nil
+	if len(headers) > 0 {
+		request.headers = headers
+	}
+	return request, nil
 }
 
-func parseHeader(line string, request *Request) *Header {
-	if strings.HasPrefix(line, "-H") {
-		return nil
+func parseHeader(line string, request *Request) (Header, bool) {
+	header := Header{}
+	if !strings.HasPrefix(line, "-H '") {
+		return header, false
 	}
-	headerStr := headerMatcher.FindString(line)
-	if headerStr == "" {
-		return nil
+	lastIdx := strings.LastIndex(line, "'")
+	if lastIdx == -1 {
+		return header, false
 	}
+	headerStr := line[4:lastIdx]
 	words := strings.Split(headerStr, ": ")
 	if len(words) != 2 {
-		return nil
+		return header, false
 	}
-	return &Header{key: words[0], value: words[1]}
-}
-
-func parseReqType(line string, request *Request) {
-	if strings.HasPrefix(line, "-X") {
-		return
-	} else if strings.Contains(line, "GET") {
-		request.reqType = Get
-	} else if strings.Contains(line, "POST") {
-		request.reqType = Post
-	}
+	return Header{key: words[0], value: words[1]}, true
 }
 
 func traverseLineInFile(filePath string, callback func(string)) error {
@@ -174,7 +219,7 @@ func traverseLineInFile(filePath string, callback func(string)) error {
 	return nil
 }
 
-func invokeReq(request *Request) (string, error) {
+func invokeReq(request Request) (string, error) {
 	client := &http.Client{}
 
 	// 创建请求
@@ -194,8 +239,6 @@ func invokeReq(request *Request) (string, error) {
 	if request.body != "" {
 		req.Body = ioutil.NopCloser(strings.NewReader(request.body))
 	}
-
-	// todo: 设置 cookie
 
 	// 发送请求
 	resp, err := client.Do(req)
